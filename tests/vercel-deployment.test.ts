@@ -39,9 +39,11 @@ test('importing Vercel handler api/[...path].ts does not call listen() and handl
 
   let vercelHandler: http.RequestListener;
   try {
-    const mod = await import('../api/[...path].ts');
-    vercelHandler = mod.default as unknown as http.RequestListener;
+    const indexMod = await import('../api/index.ts');
+    const catchAllMod = await import('../api/[...path].ts');
+    vercelHandler = indexMod.default as unknown as http.RequestListener;
     assert.equal(typeof vercelHandler, 'function');
+    assert.equal(catchAllMod.default, indexMod.default);
     assert.equal(listenCalledOnImport, false);
   } finally {
     http.Server.prototype.listen = originalListen;
@@ -301,10 +303,17 @@ test('vercel.json configures Vite preset, dist output, SPA rewrites for all app 
   assert.equal(vercelConfig.framework, 'vite');
   assert.equal(vercelConfig.buildCommand, 'npm run build');
   assert.equal(vercelConfig.outputDirectory, 'dist');
-  assert.ok(vercelConfig.rewrites.length >= 1);
+  assert.ok(vercelConfig.rewrites.length >= 2);
 
-  const spaRewrite = vercelConfig.rewrites.find((r) => r.destination === '/index.html');
-  assert.ok(spaRewrite, 'Missing SPA rewrite to /index.html');
+  const apiRewriteIdx = vercelConfig.rewrites.findIndex(
+    (r) => r.source === '/api/(.*)' && r.destination === '/api',
+  );
+  const spaRewriteIdx = vercelConfig.rewrites.findIndex((r) => r.destination === '/index.html');
+  assert.ok(apiRewriteIdx >= 0, 'Missing explicit /api/(.*) -> /api rewrite for Vercel Vite builds');
+  assert.ok(spaRewriteIdx > apiRewriteIdx, 'SPA rewrite must come after /api/(.*) rewrite');
+
+  const spaRewrite = vercelConfig.rewrites[spaRewriteIdx];
+  const apiRegex = new RegExp(`^${vercelConfig.rewrites[apiRewriteIdx].source}$`);
 
   // Convert Vercel source pattern "/((?!api(?:/|$)).*)" to JS RegExp
   assert.equal(spaRewrite.source, '/((?!api(?:/|$)).*)');
@@ -325,6 +334,7 @@ test('vercel.json configures Vite preset, dist output, SPA rewrites for all app 
     '/api/uploads/resolutions/photo.webp',
   ];
   for (const apiRoute of apiRoutes) {
+    assert.ok(apiRegex.test(apiRoute), `API route ${apiRoute} must match /api/(.*) rewrite`);
     assert.equal(regex.test(apiRoute), false, `API route ${apiRoute} must NOT rewrite to /index.html`);
   }
 
