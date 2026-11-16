@@ -8,6 +8,7 @@ import {
   useAdvancedMarkerRef,
 } from '@vis.gl/react-google-maps';
 import { ExternalLink, List, MapPin, Navigation } from 'lucide-react';
+import { OpenStreetCivicMap } from '../components/OpenStreetCivicMap';
 import { formatRelativeDate, SafeCivicImage, StatusIndicator } from '../components/StatusIndicator';
 import {
   getCategoryLabel,
@@ -127,7 +128,8 @@ export function CommunityMapPage({
   const geoReports = filteredReports.filter((r) => r.lat !== null && r.lng !== null);
   const nonGeoReports = filteredReports.filter((r) => r.lat === null || r.lng === null);
 
-  const canRenderMap = Boolean(mapsApiKey) && !quotaExceeded && viewMode === 'map';
+  const hasGoogleMaps = Boolean(mapsApiKey) && !quotaExceeded;
+  const canRenderMap = viewMode === 'map';
 
   const defaultCenter =
     geoReports.length > 0 && geoReports[0].lat !== null && geoReports[0].lng !== null
@@ -230,50 +232,54 @@ export function CommunityMapPage({
         </div>
       </div>
 
-      {/* Interactive Map OR Useful List-Based Fallback */}
+      {/* Interactive Map (Google Maps when configured, otherwise OpenStreetMap) OR List View */}
       {canRenderMap ? (
         <div className="space-y-4">
           <div className="h-[380px] sm:h-[520px] w-full rounded-xl overflow-hidden border border-[#E5E3DC] bg-[#EFECE5] relative">
-            <APIProvider apiKey={mapsApiKey} language="en" region="IN">
-              <GoogleMap
-                mapId="DEMO_MAP_ID"
+            {hasGoogleMaps ? (
+              <APIProvider apiKey={mapsApiKey} language="en" region="IN">
+                <GoogleMap
+                  mapId="DEMO_MAP_ID"
+                  defaultCenter={defaultCenter}
+                  defaultZoom={12}
+                  gestureHandling="greedy"
+                  internalUsageAttributionIds={['gmp_mcp_codeassist_v1_aistudio']}
+                  style={{ width: '100%', height: '100%' }}
+                >
+                  {geoReports.map((report) => (
+                    <ReportMapMarker
+                      key={report.id}
+                      report={report}
+                      isSelected={selectedReportId === report.id}
+                      onSelect={() => setSelectedReportId(report.id)}
+                      onClose={() => setSelectedReportId(null)}
+                      onOpenDetail={() => onNavigate(`/reports/${report.id}`)}
+                    />
+                  ))}
+                </GoogleMap>
+              </APIProvider>
+            ) : (
+              <OpenStreetCivicMap
+                reports={geoReports}
                 defaultCenter={defaultCenter}
-                defaultZoom={12}
-                gestureHandling="greedy"
-                internalUsageAttributionIds={['gmp_mcp_codeassist_v1_aistudio']}
-                style={{ width: '100%', height: '100%' }}
-              >
-                {geoReports.map((report) => (
-                  <ReportMapMarker
-                    key={report.id}
-                    report={report}
-                    isSelected={selectedReportId === report.id}
-                    onSelect={() => setSelectedReportId(report.id)}
-                    onClose={() => setSelectedReportId(null)}
-                    onOpenDetail={() => onNavigate(`/reports/${report.id}`)}
-                  />
-                ))}
-              </GoogleMap>
-            </APIProvider>
+                selectedReportId={selectedReportId}
+                onSelectReport={setSelectedReportId}
+                onOpenDetail={(id) => onNavigate(`/reports/${id}`)}
+              />
+            )}
           </div>
 
           <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-[#717873]">
             <span>
               Showing <strong className="font-mono text-[#1A1D1B]">{geoReports.length}</strong>{' '}
-              geolocated reports on map ({nonGeoReports.length} address-only reports listed below).
+              geolocated reports on {hasGoogleMaps ? 'Google Maps' : 'OpenStreetMap'} (
+              {nonGeoReports.length} address-only reports listed below).
             </span>
             <span>Green: Submitted / Resolved · Amber: Under Review · Teal: In Progress</span>
           </div>
         </div>
       ) : (
         <div className="space-y-4">
-          {!mapsApiKey && viewMode === 'map' && (
-            <div className="p-4 rounded-xl bg-[#FFFBEB] border border-[#FDE68A] text-xs text-[#92400E]">
-              Interactive Google Map is currently using the structured location directory fallback
-              because <code className="font-mono">VITE_GOOGLE_MAPS_API_KEY</code> is not configured.
-              All reports remain fully browsable with direct coordinate links below.
-            </div>
-          )}
 
           {loading ? (
             <div className="space-y-3">

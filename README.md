@@ -34,7 +34,7 @@ RaastaAI is a full-stack civic infrastructure reporting and community intelligen
 | **Server & AI API** | Node.js (v22+) + Express (`server.ts`), `@google/genai` (`gemini-4-hydrogen`), Zod validation, sliding-window rate limiter |
 | **Database & Auth** | Firebase Authentication (Google Sign-In & optional Email/Password), Cloud Firestore (`firestore.rules` + `firebase-blueprint.json`) |
 | **Media Storage** | Firebase Storage (`storage.rules`) with automatic failover to **Vercel Blob** (`BLOB_READ_WRITE_TOKEN`), **Cloudinary**, or authenticated local Express storage in dev/preview (`/api/upload-image`, `/api/uploads/:folder/:filename`) |
-| **Mapping** | `@vis.gl/react-google-maps` (`AdvancedMarker`, `Pin`, `InfoWindow`) + automatic list fallback |
+| **Mapping** | `@vis.gl/react-google-maps` (`AdvancedMarker`, `Pin`, `InfoWindow`) with automatic **OpenStreetMap + Leaflet** interactive map fallback and directory list view |
 
 ---
 
