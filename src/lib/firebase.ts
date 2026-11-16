@@ -14,9 +14,8 @@ const app = initializeApp(firebaseConfig);
 export const db = getFirestore(app, firebaseConfig.firestoreDatabaseId);
 export const auth = getAuth(app);
 export const storage = getStorage(app);
-// Fail fast when Firebase Storage bucket is not yet provisioned (default is 600s)
-storage.maxUploadRetryTime = 3500;
-storage.maxOperationRetryTime = 4000;
+storage.maxUploadRetryTime = import.meta.env.PROD ? 20000 : 3500;
+storage.maxOperationRetryTime = import.meta.env.PROD ? 20000 : 4000;
 export const googleProvider = new GoogleAuthProvider();
 
 export const BOOTSTRAPPED_ADMIN_EMAIL = 'raniaoflords29@gmail.com';

@@ -15,20 +15,30 @@ const __dirname = path.dirname(__filename);
 
 const PORT = Number(process.env.PORT || 3000);
 const MODEL_NAME = 'gemini-4-hydrogen';
-const MAX_MEDIA_BYTES = 5 * 1024 * 1024;
+export const SAFE_VERCEL_REQUEST_BYTES = 4 * 1024 * 1024; // 4 MB budget safely under Vercel's 4.5 MB limit
+export const MAX_ANALYZE_IMAGE_BYTES = Math.floor(2.5 * 1024 * 1024); // ~2.5 MB raw (~3.33 MB base64)
+export const MAX_ANALYZE_AUDIO_BYTES = 1 * 1024 * 1024; // 1 MB raw (~1.33 MB base64)
+export const MAX_FALLBACK_UPLOAD_BYTES = Math.floor(2.8 * 1024 * 1024); // ~2.8 MB raw (~3.73 MB base64)
 const DEFAULT_UPLOADS_DIR = path.resolve(__dirname, 'uploads');
 
 function loadFirebaseApiKey(): string {
-  try {
-    const configPath = path.resolve(__dirname, 'firebase-applet-config.json');
-    if (fs.existsSync(configPath)) {
-      const raw = JSON.parse(fs.readFileSync(configPath, 'utf8')) as { apiKey?: string };
-      return raw.apiKey || '';
+  const candidates = [
+    path.resolve(__dirname, 'firebase-applet-config.json'),
+    path.resolve(process.cwd(), 'firebase-applet-config.json'),
+  ];
+  for (const configPath of candidates) {
+    try {
+      if (fs.existsSync(configPath)) {
+        const raw = JSON.parse(fs.readFileSync(configPath, 'utf8')) as { apiKey?: string };
+        if (raw.apiKey) {
+          return raw.apiKey;
+        }
+      }
+    } catch {
+      // ignore malformed config
     }
-  } catch {
-    // ignore malformed config
   }
-  return '';
+  return process.env.FIREBASE_WEB_API_KEY || '';
 }
 
 const FIREBASE_WEB_API_KEY = loadFirebaseApiKey();
@@ -101,9 +111,9 @@ export const UploadImageInputSchema = z.object({
   imageBase64: z
     .string()
     .min(16, 'Image payload is empty.')
-    .max(8_500_000, 'Encoded image exceeds maximum allowed payload.')
-    .refine((val) => isValidBase64ByteLength(val, MAX_MEDIA_BYTES), {
-      message: 'Image must be valid base64 data under 5 MB.',
+    .max(3_900_000, 'Encoded image exceeds 4 MB serverless request budget.')
+    .refine((val) => isValidBase64ByteLength(val, MAX_FALLBACK_UPLOAD_BYTES), {
+      message: 'Image must be valid base64 data under 2.8 MB for local upload fallback.',
     }),
   mimeType: z.enum(['image/jpeg', 'image/png', 'image/webp']),
 });
@@ -158,48 +168,59 @@ export function isValidBase64ByteLength(b64: string, maxBytes: number): boolean 
   return approxBytes > 0 && approxBytes <= maxBytes;
 }
 
-export const AnalyzeReportInputSchema = z.object({
-  imageBase64: z
-    .string()
-    .min(32, 'Photograph data is too short or empty.')
-    .max(8_500_000, 'Encoded photograph exceeds maximum allowed payload.')
-    .refine((val) => isValidBase64ByteLength(val, MAX_MEDIA_BYTES), {
-      message: 'Photograph must be valid base64 data under 5 MB.',
-    }),
-  imageMimeType: z.enum(ALLOWED_IMAGE_MIME_TYPES),
-  audioBase64: z
-    .string()
-    .max(7_000_000)
-    .refine((val) => isValidBase64ByteLength(val, MAX_MEDIA_BYTES), {
-      message: 'Audio recording must be valid base64 data under 5 MB.',
-    })
-    .optional(),
-  audioMimeType: z
-    .string()
-    .transform((val) => normalizeMimeType(val))
-    .pipe(z.enum(ALLOWED_AUDIO_MIME_TYPES))
-    .optional(),
-  description: z.string().max(1500).default(''),
-  area: z.string().max(140).default(''),
-  landmark: z.string().max(140).default(''),
-  city: z.string().max(60).default('Hyderabad'),
-  selectedCategory: z
-    .enum(['pothole', 'garbage', 'water_leakage', 'damaged_footpath', 'broken_streetlight', 'other'])
-    .optional(),
-  language: z.enum(['en', 'te', 'hi', 'ur']).default('en'),
-  existingReportsSummary: z
-    .array(
-      z.object({
-        id: z.string().max(128),
-        category: z.string().max(40),
-        title: z.string().max(140),
-        area: z.string().max(140),
-        status: z.string().max(40),
+export const AnalyzeReportInputSchema = z
+  .object({
+    imageBase64: z
+      .string()
+      .min(32, 'Photograph data is too short or empty.')
+      .max(3_600_000, 'Encoded photograph exceeds serverless analysis budget.')
+      .refine((val) => isValidBase64ByteLength(val, MAX_ANALYZE_IMAGE_BYTES), {
+        message: 'Photograph must be valid base64 data under 2.5 MB for AI analysis.',
       }),
-    )
-    .max(25)
-    .default([]),
-});
+    imageMimeType: z.enum(ALLOWED_IMAGE_MIME_TYPES),
+    audioBase64: z
+      .string()
+      .max(1_500_000, 'Encoded voice recording exceeds serverless analysis budget.')
+      .refine((val) => isValidBase64ByteLength(val, MAX_ANALYZE_AUDIO_BYTES), {
+        message: 'Audio recording must be valid base64 data under 1 MB.',
+      })
+      .optional(),
+    audioMimeType: z
+      .string()
+      .transform((val) => normalizeMimeType(val))
+      .pipe(z.enum(ALLOWED_AUDIO_MIME_TYPES))
+      .optional(),
+    description: z.string().max(1500).default(''),
+    area: z.string().max(140).default(''),
+    landmark: z.string().max(140).default(''),
+    city: z.string().max(60).default('Hyderabad'),
+    selectedCategory: z
+      .enum(['pothole', 'garbage', 'water_leakage', 'damaged_footpath', 'broken_streetlight', 'other'])
+      .optional(),
+    language: z.enum(['en', 'te', 'hi', 'ur']).default('en'),
+    existingReportsSummary: z
+      .array(
+        z.object({
+          id: z.string().max(128),
+          category: z.string().max(40),
+          title: z.string().max(140),
+          area: z.string().max(140),
+          status: z.string().max(40),
+        }),
+      )
+      .max(25)
+      .default([]),
+  })
+  .superRefine((val, ctx) => {
+    const serializedBytes = Buffer.byteLength(JSON.stringify(val), 'utf8');
+    if (serializedBytes > SAFE_VERCEL_REQUEST_BYTES) {
+      ctx.addIssue({
+        code: 'custom',
+        message:
+          'Combined image, audio, and report metadata exceeds the 4 MB serverless request budget. Please use a shorter voice note or smaller photograph.',
+      });
+    }
+  });
 
 export const AnalyzeReportOutputSchema = z.object({
   suggestedCategory: z.enum([
@@ -375,7 +396,7 @@ export function createApiApp(
     res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
     next();
   });
-  app.use(express.json({ limit: '16mb' }));
+  app.use(express.json({ limit: SAFE_VERCEL_REQUEST_BYTES }));
 
   app.get('/api/health', (_req, res) => {
     res.json({
@@ -402,6 +423,15 @@ export function createApiApp(
   });
 
   app.post('/api/upload-image', async (req, res) => {
+    const isProductionRuntime = process.env.NODE_ENV === 'production' || process.env.VERCEL === '1';
+    if (isProductionRuntime && !options?.uploadsDir) {
+      res.status(503).json({
+        error:
+          'Local server image upload fallback is disabled in production. Enable Firebase Storage and deploy storage.rules for direct uploads.',
+      });
+      return;
+    }
+
     const clientIp = req.ip || 'unknown';
     if (isRateLimited(clientIp)) {
       res.status(429).json({ error: 'Too many upload requests. Please wait a minute and retry.' });
@@ -438,8 +468,8 @@ export function createApiApp(
     const cleanBase64 = imageBase64.replace(/\s+/g, '');
     const buffer = Buffer.from(cleanBase64, 'base64');
 
-    if (buffer.length === 0 || buffer.length > MAX_MEDIA_BYTES) {
-      res.status(400).json({ error: 'Image size must be between 1 byte and 5 MB.' });
+    if (buffer.length === 0 || buffer.length > MAX_FALLBACK_UPLOAD_BYTES) {
+      res.status(400).json({ error: 'Image size must be between 1 byte and 2.8 MB for local upload fallback.' });
       return;
     }
 
@@ -809,7 +839,9 @@ export function createApiApp(
         return;
       }
       if (err?.type === 'entity.too.large') {
-        res.status(413).json({ error: 'Uploaded payload exceeds the 16 MB request limit.' });
+        res.status(413).json({
+          error: 'Request payload exceeds the 4 MB serverless limit. Please use a smaller photograph or shorter voice note.',
+        });
         return;
       }
       if (err?.type === 'entity.parse.failed') {
@@ -851,7 +883,7 @@ async function startServer() {
   httpServer.requestTimeout = 120_000;
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (!process.env.VERCEL && process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   startServer().catch((err) => {
     console.error('Failed to start RaastaAI server:', err);
     process.exit(1);

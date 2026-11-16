@@ -27,6 +27,7 @@ import type {
 } from '../types/civic';
 
 const MAX_UPLOAD_BYTES = 5 * 1024 * 1024;
+export const SAFE_ANALYZE_REQUEST_BYTES = 4 * 1024 * 1024;
 const ALLOWED_MIME_TYPES = ['image/jpeg', 'image/png', 'image/webp'];
 
 function tsToMillis(value: unknown): number {
@@ -134,6 +135,86 @@ export async function compressImageForUpload(file: File): Promise<{ blob: Blob; 
   });
 }
 
+async function encodeImageAtMaxDimAndQuality(
+  source: Blob,
+  maxDim: number,
+  quality: number,
+): Promise<{ blob: Blob; base64: string; mimeType: 'image/jpeg' }> {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    const objectUrl = URL.createObjectURL(source);
+    img.onload = () => {
+      URL.revokeObjectURL(objectUrl);
+      let { width, height } = img;
+      if (width > maxDim || height > maxDim) {
+        if (width >= height) {
+          height = Math.max(1, Math.round((height * maxDim) / width));
+          width = maxDim;
+        } else {
+          width = Math.max(1, Math.round((width * maxDim) / height));
+          height = maxDim;
+        }
+      }
+      const canvas = document.createElement('canvas');
+      canvas.width = width;
+      canvas.height = height;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) {
+        reject(new Error('Unable to process image in browser canvas.'));
+        return;
+      }
+      ctx.drawImage(img, 0, 0, width, height);
+      canvas.toBlob(
+        (blob) => {
+          if (!blob) {
+            reject(new Error('Image compression failed.'));
+            return;
+          }
+          const reader = new FileReader();
+          reader.onloadend = () => {
+            const result = String(reader.result || '');
+            const base64 = result.includes(',') ? result.split(',')[1] : result;
+            resolve({ blob, base64, mimeType: 'image/jpeg' });
+          };
+          reader.onerror = () => reject(new Error('Failed to encode compressed image.'));
+          reader.readAsDataURL(blob);
+        },
+        'image/jpeg',
+        quality,
+      );
+    };
+    img.onerror = () => {
+      URL.revokeObjectURL(objectUrl);
+      reject(new Error('Image could not be re-encoded to fit the analysis budget.'));
+    };
+    img.src = objectUrl;
+  });
+}
+
+export async function compressImageForAnalysisBudget(
+  source: Blob,
+  maxBase64Bytes: number,
+): Promise<{ base64: string; mimeType: 'image/jpeg' }> {
+  const steps: Array<{ maxDim: number; quality: number }> = [
+    { maxDim: 1280, quality: 0.78 },
+    { maxDim: 1024, quality: 0.68 },
+    { maxDim: 860, quality: 0.56 },
+    { maxDim: 680, quality: 0.45 },
+    { maxDim: 512, quality: 0.36 },
+  ];
+
+  let lastBase64 = '';
+  for (const step of steps) {
+    const encoded = await encodeImageAtMaxDimAndQuality(source, step.maxDim, step.quality);
+    lastBase64 = encoded.base64;
+    if (encoded.base64.length <= maxBase64Bytes) {
+      return { base64: encoded.base64, mimeType: encoded.mimeType };
+    }
+  }
+
+  return { base64: lastBase64, mimeType: 'image/jpeg' };
+}
+
 let storageUnavailableInSession = false;
 
 function isStorageFallbackEligible(err: unknown): boolean {
@@ -198,6 +279,26 @@ async function uploadViaServerFallback(
   return data.url;
 }
 
+function formatProductionStorageError(err: unknown): string {
+  const code =
+    err && typeof err === 'object' && 'code' in err ? String((err as { code?: unknown }).code || '') : '';
+  const msg = err instanceof Error ? err.message : String(err);
+  const combined = `${code} ${msg}`.toLowerCase();
+
+  if (combined.includes('storage/unauthorized')) {
+    return 'Permission denied by Firebase Storage security rules. Sign in with a verified email and ensure storage.rules are deployed.';
+  }
+  if (
+    combined.includes('storage/bucket-not-found') ||
+    combined.includes('storage/retry-limit-exceeded') ||
+    combined.includes('404') ||
+    combined.includes('not found')
+  ) {
+    return 'Firebase Storage is not enabled or unreachable for this project. Enable Firebase Storage in Firebase Console and deploy storage.rules before uploading images in production.';
+  }
+  return `Firebase Storage upload failed (${msg}). Please verify Firebase Storage is enabled and try again.`;
+}
+
 async function uploadWithStorageOrFallback(params: {
   folder: 'reports' | 'resolutions';
   uid: string;
@@ -209,23 +310,34 @@ async function uploadWithStorageOrFallback(params: {
     throw new Error(`Processed ${params.label} exceeds 5 MB limit.`);
   }
 
-  if (!storageUnavailableInSession) {
+  const isProd = Boolean(import.meta.env?.PROD);
+
+  if (isProd || !storageUnavailableInSession) {
     const path = `${params.folder}/${params.uid}/${params.reportId}_${Date.now()}.jpg`;
     const storageRef = ref(storage, path);
     try {
       await uploadBytes(storageRef, params.blob, { contentType: 'image/jpeg' });
       return await getDownloadURL(storageRef);
     } catch (storageErr) {
+      if (isProd) {
+        throw new Error(formatProductionStorageError(storageErr));
+      }
       if (!isStorageFallbackEligible(storageErr)) {
         const msg = storageErr instanceof Error ? storageErr.message : String(storageErr);
         throw new Error(`Firebase Storage upload failed (${msg}).`);
       }
       storageUnavailableInSession = true;
       console.warn(
-        'Firebase Storage unavailable; switching to authenticated RaastaAI server upload fallback:',
+        'Firebase Storage unavailable in development; switching to local Express upload fallback:',
         storageErr instanceof Error ? storageErr.message : storageErr,
       );
     }
+  }
+
+  if (isProd) {
+    throw new Error(
+      'Local server image uploads are disabled in production. Enable Firebase Storage and deploy storage.rules.',
+    );
   }
 
   return uploadViaServerFallback(params.folder, params.reportId, params.blob);
@@ -382,6 +494,11 @@ export interface CreateCivicReportInput {
 }
 
 export async function createCivicReport(input: CreateCivicReportInput): Promise<void> {
+  if (import.meta.env?.PROD && input.imageUrl.trim().startsWith('/api/uploads/')) {
+    throw new Error(
+      'Ephemeral local /api/uploads URLs cannot be stored in production. Please ensure Firebase Storage is enabled.',
+    );
+  }
   const path = `reports/${input.reportId}`;
   const sanitizedAi = input.aiAnalysis
     ? {
@@ -501,6 +618,11 @@ export async function adminUpdateReportStatus(params: {
   resolutionNotes: string;
   resolutionImageUrl: string;
 }): Promise<void> {
+  if (import.meta.env?.PROD && params.resolutionImageUrl.trim().startsWith('/api/uploads/')) {
+    throw new Error(
+      'Ephemeral local /api/uploads URLs cannot be stored in production. Please ensure Firebase Storage is enabled.',
+    );
+  }
   const activityId = `act_${params.reportId}_${Date.now()}`;
   const path = `reports/${params.reportId}`;
   try {

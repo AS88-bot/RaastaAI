@@ -90,9 +90,10 @@ Set variables in `.env` (or AI Studio Secrets / hosting environment variables):
 ### 3. Firebase Configuration
 1. **Authentication**: Google Sign-In is supported out of the box. To also allow Email/Password accounts, enable **Email/Password** in **Firebase Console → Authentication → Sign-in method**.
 2. **Firestore**: Deploy `firestore.rules` to your database (`firebase deploy --only firestore:rules`).
-3. **Storage (recommended for persistent production media)**:
+3. **Storage (Required in Production)**:
    - Enable **Storage** in Firebase Console and publish `storage.rules` (`firebase deploy --only storage`).
-   - If Storage is not yet enabled, `src/lib/reportsService.ts` fails fast after 3.5s and automatically falls back to `/api/upload-image` on the Express server (note: local disk uploads in `uploads/` are ephemeral across container restarts).
+   - Direct client-side Firebase Storage uploads (up to 5 MB) are used for report and resolution photographs.
+   - In **production**, the local filesystem fallback (`/api/upload-image`) is intentionally disabled so ephemeral `/api/uploads/...` URLs are never stored in Firestore. In **local development**, if Firebase Storage is not yet enabled, `src/lib/reportsService.ts` fails fast after 3.5s and falls back to `/api/upload-image`.
 4. **Admin Access**: Official moderation requires a verified email listed in `admins/{uid}` or the bootstrapped administrator account configured in `firestore.rules` and `src/lib/firebase.ts`.
 
 ### 4. Run Locally
@@ -100,6 +101,43 @@ Set variables in `.env` (or AI Studio Secrets / hosting environment variables):
 npm run dev
 ```
 Open `http://localhost:3000`.
+
+---
+
+## Deploying to Vercel
+
+RaastaAI uses a single-project **Vite + Vercel Serverless Function** setup configured in `vercel.json` and `api/[...path].ts`:
+- **Frontend**: Built as static assets into `dist/` using the `vite` framework preset, with an SPA fallback rewrite to `/index.html` for `/dashboard`, `/report`, `/map`, `/feed`, `/insights`, `/admin`, and `/reports/:id`.
+- **Backend API**: All `/api/*` routes (including nested `/api/uploads/:folder/:filename`) are excluded from the SPA rewrite and handled by the catch-all serverless function `api/[...path].ts`, which exports `createApiApp()` from `server.ts` without starting a listening socket or Vite middleware.
+
+### Step 1: Import Project & Build Settings
+1. Push your repository to GitHub and import it in **Vercel → Add New Project**.
+2. Keep the settings defined in `vercel.json`:
+   - **Framework Preset**: `Vite`
+   - **Build Command**: `npm run build`
+   - **Output Directory**: `dist`
+
+### Step 2: Configure Vercel Environment Variables
+Add these under **Project Settings → Environment Variables**:
+- `GEMINI_API_KEY` *(Required, server-side only)* — Your Google Gemini API key. **Never** prefix with `VITE_` or expose in browser bundles.
+- `VITE_GOOGLE_MAPS_API_KEY` or `GOOGLE_MAPS_API_KEY` *(Optional)* — Browser key for interactive Google Maps on `/map`. Restrict this key by HTTP referrer (`https://<your-project>.vercel.app/*`) and to the Maps JavaScript API in Google Cloud Console.
+- `APP_URL` *(Optional)* — Your deployed Vercel URL (`https://<your-project>.vercel.app`).
+
+### Step 3: Required Firebase Setup for Production
+1. **Enable Firebase Storage & Deploy `storage.rules`**:
+   - In **Firebase Console → Build → Storage**, initialize your Storage bucket (`gen-lang-client-0709466181.firebasestorage.app`) and publish `storage.rules`.
+   - Production image uploads fail with an actionable configuration error if Storage is disabled or rules deny access; local disk uploads are never used in production.
+2. **Authorize Your Vercel Domain in Firebase Auth**:
+   - Open **Firebase Console → Authentication → Settings → Authorized domains** and add your Vercel domain (e.g., `<your-project>.vercel.app` and any custom domain) so Google Sign-In popups succeed.
+3. **Deploy `firestore.rules`**:
+   - Ensure `firestore.rules` is deployed to your Firestore database (`ai-studio-890988cc-db2b-45f2-b546-38a4e4229fbd`).
+
+### Known Vercel Limits & Payload Budgets
+- **4.5 MB Serverless Request Body Limit**: Vercel Node.js Functions enforce a hard 4.5 MB limit on incoming request bodies.
+- **4 MB Analysis Budget (`POST /api/analyze-report`)**:
+  - Client-side `ReportIssuePage` compresses analysis images adaptively, caps voice recordings to **45 seconds / 950 KB**, and verifies the final JSON payload size using `TextEncoder` stays under **4 MB** before calling `/api/analyze-report`.
+  - Express enforces a matching **4 MB** JSON body parser limit and Zod payload validation on `server.ts`.
+  - Direct image uploads to Firebase Storage remain separate from Gemini analysis payloads and support up to **5 MB**.
 
 ---
 
@@ -112,13 +150,13 @@ npm run lint
 # Security rules ESLint audit
 npx eslint firestore.rules
 
-# Run structural rules, Gemini API, and upload fallback tests
+# Run structural rules, Gemini API, upload fallback, and Vercel deployment tests
 npx tsx --test tests/*.test.ts
 
 # Production frontend build
 npm run build
 
-# Start production server (serves dist/ + /api/* on port 3000)
+# Start local production server (serves dist/ + /api/* on port 3000)
 npm start
 ```
 
@@ -126,3 +164,4 @@ npm start
 
 ## License
 Apache-2.0
+
