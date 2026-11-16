@@ -1,0 +1,6 @@
+{
+  "name": "RaastaAI",
+  "description": "AI-powered civic issue reporting and community intelligence platform for Hyderabad and Indian cities.",
+  "requestFramePermissions": ["camera", "microphone", "geolocation"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

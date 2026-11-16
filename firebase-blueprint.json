@@ -1,0 +1,321 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "Citizen or administrator account profile. Private contact fields are restricted to owner and admins.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "Firebase Auth UID"
+        },
+        "displayName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80,
+          "description": "Public display name"
+        },
+        "email": {
+          "type": "string",
+          "format": "email",
+          "maxLength": 160,
+          "description": "Private user email address"
+        },
+        "city": {
+          "type": "string",
+          "maxLength": 60,
+          "description": "Default city (e.g. Hyderabad)"
+        },
+        "preferredLanguage": {
+          "type": "string",
+          "enum": ["en", "te", "hi", "ur"],
+          "description": "Preferred complaint generation language"
+        },
+        "role": {
+          "type": "string",
+          "enum": ["citizen", "admin"],
+          "description": "Access role controlled by verified admin records"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Account creation server timestamp"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Account update server timestamp"
+        }
+      },
+      "required": ["uid", "displayName", "city", "preferredLanguage", "role", "createdAt", "updatedAt"]
+    },
+    "AdminRecord": {
+      "title": "AdminRecord",
+      "description": "Trusted allowlist record granting administrative moderation privileges.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "Firebase Auth UID of the administrator"
+        },
+        "email": {
+          "type": "string",
+          "format": "email",
+          "maxLength": 160,
+          "description": "Verified administrator email"
+        },
+        "grantedBy": {
+          "type": "string",
+          "maxLength": 128,
+          "description": "UID or system identifier that granted admin role"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Grant timestamp"
+        }
+      },
+      "required": ["uid", "email", "grantedBy", "createdAt"]
+    },
+    "CivicReport": {
+      "title": "CivicReport",
+      "description": "Public civic infrastructure issue report with street-level location, photo URL, and optional AI advisory metadata.",
+      "type": "object",
+      "properties": {
+        "creatorUid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "UID of reporting citizen"
+        },
+        "creatorDisplayName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 60,
+          "description": "Non-PII display name shown on public report"
+        },
+        "category": {
+          "type": "string",
+          "enum": ["pothole", "garbage", "water_leakage", "damaged_footpath", "broken_streetlight", "other"],
+          "description": "Civic issue category"
+        },
+        "title": {
+          "type": "string",
+          "minLength": 4,
+          "maxLength": 140,
+          "description": "Concise issue summary"
+        },
+        "description": {
+          "type": "string",
+          "minLength": 10,
+          "maxLength": 1500,
+          "description": "Issue details provided by citizen or refined with AI"
+        },
+        "complaintText": {
+          "type": "string",
+          "minLength": 10,
+          "maxLength": 3500,
+          "description": "Citizen-reviewed civic complaint draft in chosen language"
+        },
+        "language": {
+          "type": "string",
+          "enum": ["en", "te", "hi", "ur"],
+          "description": "Language of generated complaint"
+        },
+        "area": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 140,
+          "description": "Public road, neighborhood, or ward name"
+        },
+        "landmark": {
+          "type": "string",
+          "maxLength": 140,
+          "description": "Nearby public landmark"
+        },
+        "city": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 60,
+          "description": "City name"
+        },
+        "lat": {
+          "type": "number",
+          "description": "Optional GPS latitude"
+        },
+        "lng": {
+          "type": "number",
+          "description": "Optional GPS longitude"
+        },
+        "imageUrl": {
+          "type": "string",
+          "minLength": 10,
+          "maxLength": 2000,
+          "description": "Firebase Storage HTTPS URL of issue photograph"
+        },
+        "aiAnalysis": {
+          "type": "object",
+          "description": "Structured Gemini multimodal advisory output (non-authoritative)"
+        },
+        "prioritySuggestion": {
+          "type": "string",
+          "enum": ["Low", "Medium", "High", "Urgent"],
+          "description": "Suggested severity level"
+        },
+        "status": {
+          "type": "string",
+          "enum": ["Submitted", "Under Review", "In Progress", "Resolved"],
+          "description": "Official moderation status controlled strictly by admins"
+        },
+        "verificationCount": {
+          "type": "integer",
+          "description": "Count of unique community verifications"
+        },
+        "resolutionNotes": {
+          "type": "string",
+          "maxLength": 1500,
+          "description": "Official resolution notes added by admin"
+        },
+        "resolutionImageUrl": {
+          "type": "string",
+          "maxLength": 2000,
+          "description": "Optional after-resolution photograph URL added by admin"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Creation server timestamp"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Last update server timestamp"
+        }
+      },
+      "required": [
+        "creatorUid",
+        "creatorDisplayName",
+        "category",
+        "title",
+        "description",
+        "complaintText",
+        "language",
+        "area",
+        "landmark",
+        "city",
+        "imageUrl",
+        "prioritySuggestion",
+        "status",
+        "verificationCount",
+        "resolutionNotes",
+        "resolutionImageUrl",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "Verification": {
+      "title": "Verification",
+      "description": "Unique community confirmation that a reported civic issue still exists, keyed as {reportId}_{userId}.",
+      "type": "object",
+      "properties": {
+        "reportId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "Target report ID"
+        },
+        "userId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "Verifying user UID"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Verification server timestamp"
+        }
+      },
+      "required": ["reportId", "userId", "createdAt"]
+    },
+    "AdminActivity": {
+      "title": "AdminActivity",
+      "description": "Immutable audit log of administrative status transitions and resolution updates.",
+      "type": "object",
+      "properties": {
+        "reportId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "Target report ID"
+        },
+        "adminUid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "Admin UID"
+        },
+        "adminName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80,
+          "description": "Admin display name"
+        },
+        "previousStatus": {
+          "type": "string",
+          "enum": ["Submitted", "Under Review", "In Progress", "Resolved"],
+          "description": "Previous report status"
+        },
+        "newStatus": {
+          "type": "string",
+          "enum": ["Submitted", "Under Review", "In Progress", "Resolved"],
+          "description": "Updated report status"
+        },
+        "note": {
+          "type": "string",
+          "maxLength": 1500,
+          "description": "Summary of moderation note"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Action server timestamp"
+        }
+      },
+      "required": ["reportId", "adminUid", "adminName", "previousStatus", "newStatus", "note", "createdAt"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/UserProfile" },
+      "description": "Citizen and admin profiles; PII strictly restricted to owner and admins."
+    },
+    "/admins/{userId}": {
+      "schema": { "$ref": "#/entities/AdminRecord" },
+      "description": "Verified administrator allowlist documents."
+    },
+    "/reports/{reportId}": {
+      "schema": { "$ref": "#/entities/CivicReport" },
+      "description": "Public civic infrastructure reports without private PII."
+    },
+    "/verifications/{verificationId}": {
+      "schema": { "$ref": "#/entities/Verification" },
+      "description": "Unique {reportId}_{userId} verification records paired atomically with report verificationCount."
+    },
+    "/adminActivity/{activityId}": {
+      "schema": { "$ref": "#/entities/AdminActivity" },
+      "description": "Immutable administrative moderation audit trail."
+    }
+  }
+}

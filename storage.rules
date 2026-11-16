@@ -1,0 +1,37 @@
+rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+    function isSignedIn() {
+      return request.auth != null && request.auth.token.email_verified == true;
+    }
+
+    function isValidImage() {
+      return request.resource != null
+        && request.resource.size > 0
+        && request.resource.size <= 5 * 1024 * 1024
+        && request.resource.contentType.matches('image/(jpeg|png|webp)');
+    }
+
+    // Citizen issue photographs: scoped by uploader UID, public read for civic transparency
+    match /reports/{userId}/{fileName} {
+      allow read: if true;
+      allow write: if isSignedIn()
+        && request.auth.uid == userId
+        && fileName.size() <= 128
+        && isValidImage();
+    }
+
+    // After-resolution photographs scoped by uploader UID, public read for civic transparency
+    match /resolutions/{userId}/{fileName} {
+      allow read: if true;
+      allow write: if isSignedIn()
+        && request.auth.uid == userId
+        && fileName.size() <= 128
+        && isValidImage();
+    }
+
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+  }
+}
