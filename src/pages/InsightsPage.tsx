@@ -89,9 +89,21 @@ export function InsightsPage({ reports, loading }: InsightsPageProps) {
         headers: { 'Content-Type': 'application/json' },
         body,
       });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Summary generation failed.');
-      setSummary(data);
+      const rawText = await res.text();
+      let data: Record<string, unknown> = {};
+      try {
+        data = rawText ? (JSON.parse(rawText) as Record<string, unknown>) : {};
+      } catch {
+        throw new Error(
+          `Server returned an unexpected response (HTTP ${res.status}): ${rawText.slice(0, 140)}`,
+        );
+      }
+      if (!res.ok) {
+        throw new Error(
+          typeof data.error === 'string' ? data.error : `Summary generation failed (HTTP ${res.status}).`,
+        );
+      }
+      setSummary(data as unknown as WeeklySummaryResult);
     } catch (err) {
       setSummaryError(err instanceof Error ? err.message : 'Unable to generate AI summary.');
     } finally {

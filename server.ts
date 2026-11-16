@@ -10,8 +10,8 @@ import { z } from 'zod';
 
 dotenv.config();
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+const metaUrl = typeof import.meta !== 'undefined' ? import.meta.url : undefined;
+const currentDir = metaUrl ? path.dirname(fileURLToPath(metaUrl)) : process.cwd();
 
 const PORT = Number(process.env.PORT || 3000);
 const MODEL_NAME = 'gemini-4-hydrogen';
@@ -19,11 +19,11 @@ export const SAFE_VERCEL_REQUEST_BYTES = 4 * 1024 * 1024; // 4 MB budget safely 
 export const MAX_ANALYZE_IMAGE_BYTES = Math.floor(2.5 * 1024 * 1024); // ~2.5 MB raw (~3.33 MB base64)
 export const MAX_ANALYZE_AUDIO_BYTES = 1 * 1024 * 1024; // 1 MB raw (~1.33 MB base64)
 export const MAX_FALLBACK_UPLOAD_BYTES = Math.floor(2.8 * 1024 * 1024); // ~2.8 MB raw (~3.73 MB base64)
-const DEFAULT_UPLOADS_DIR = path.resolve(__dirname, 'uploads');
+const DEFAULT_UPLOADS_DIR = path.resolve(currentDir, 'uploads');
 
 function loadFirebaseApiKey(): string {
   const candidates = [
-    path.resolve(__dirname, 'firebase-applet-config.json'),
+    path.resolve(currentDir, 'firebase-applet-config.json'),
     path.resolve(process.cwd(), 'firebase-applet-config.json'),
   ];
   for (const configPath of candidates) {
@@ -860,14 +860,17 @@ async function startServer() {
   const app = createApiApp();
 
   if (process.env.NODE_ENV !== 'production') {
-    const { createServer: createViteServer } = await import('vite');
+    const vitePkg = 'vite';
+    const { createServer: createViteServer } = (await import(
+      /* @vite-ignore */ vitePkg
+    )) as typeof import('vite');
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: 'spa',
     });
     app.use(vite.middlewares);
   } else {
-    const distPath = path.resolve(__dirname, 'dist');
+    const distPath = path.resolve(currentDir, 'dist');
     app.use(express.static(distPath));
     app.get('*', (_req, res) => {
       res.sendFile(path.join(distPath, 'index.html'));
@@ -883,7 +886,7 @@ async function startServer() {
   httpServer.requestTimeout = 120_000;
 }
 
-if (!process.env.VERCEL && process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (!process.env.VERCEL && metaUrl && process.argv[1] && metaUrl === pathToFileURL(process.argv[1]).href) {
   startServer().catch((err) => {
     console.error('Failed to start RaastaAI server:', err);
     process.exit(1);
