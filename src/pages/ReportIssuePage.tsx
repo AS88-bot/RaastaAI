@@ -14,17 +14,11 @@ import {
 import { useAuth } from '../context/AuthContext';
 import { formatFirestoreErrorForUi } from '../lib/firebase';
 import {
-  compressImageForAnalysisBudget,
   compressImageForUpload,
   createCivicReport,
-  SAFE_ANALYZE_REQUEST_BYTES,
   uploadIssueImage,
   validateImageFile,
 } from '../lib/reportsService';
-
-const MAX_AUDIO_SECONDS = 45;
-const MAX_AUDIO_BYTES = 950 * 1024;
-const MAX_ANALYZE_IMAGE_BASE64_CHARS = 3_350_000;
 import {
   ISSUE_CATEGORIES,
   PRIORITY_LEVELS,
@@ -91,16 +85,7 @@ export function ReportIssuePage({ existingReports, onNavigate }: ReportIssuePage
   useEffect(() => {
     if (!isRecording) return;
     const timer = window.setInterval(() => {
-      setRecordingSeconds((s) => {
-        const next = s + 1;
-        if (next >= MAX_AUDIO_SECONDS) {
-          if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
-            mediaRecorderRef.current.stop();
-          }
-          setIsRecording(false);
-        }
-        return next;
-      });
+      setRecordingSeconds((s) => s + 1);
     }, 1000);
     return () => window.clearInterval(timer);
   }, [isRecording]);
@@ -208,13 +193,8 @@ export function ReportIssuePage({ existingReports, onNavigate }: ReportIssuePage
       recorder.onstop = () => {
         stream.getTracks().forEach((t) => t.stop());
         const blob = new Blob(audioChunksRef.current, { type: resolvedMime });
-        if (blob.size > MAX_AUDIO_BYTES) {
-          setAudioPreviewUrl(null);
-          setAudioBase64(null);
-          setAudioMimeType(null);
-          setError(
-            'Voice recording exceeds the 950 KB limit for AI analysis. Please record a shorter clip (under 45 seconds) or type your description.',
-          );
+        if (blob.size > 5 * 1024 * 1024) {
+          setError('Voice recording exceeds 5 MB limit. Please record a shorter clip.');
           return;
         }
         setAudioPreviewUrl(URL.createObjectURL(blob));
@@ -280,56 +260,22 @@ export function ReportIssuePage({ existingReports, onNavigate }: ReportIssuePage
         status: r.status,
       }));
 
-      const payload = {
-        imageBase64,
-        imageMimeType,
-        audioBase64: audioBase64 || undefined,
-        audioMimeType: audioMimeType || undefined,
-        description: description.trim(),
-        area: area.trim(),
-        landmark: landmark.trim(),
-        city: city.trim() || 'Hyderabad',
-        selectedCategory: category,
-        language,
-        existingReportsSummary: recentSummary,
-      };
-
-      const encoder = new TextEncoder();
-      let serializedBody = JSON.stringify(payload);
-      let payloadBytes = encoder.encode(serializedBody).length;
-
-      if (payloadBytes > SAFE_ANALYZE_REQUEST_BYTES || payload.imageBase64.length > MAX_ANALYZE_IMAGE_BASE64_CHARS) {
-        const nonImageBytes = encoder.encode(
-          JSON.stringify({ ...payload, imageBase64: '', imageMimeType: 'image/jpeg' }),
-        ).length;
-        const maxImageBase64Budget = Math.min(
-          MAX_ANALYZE_IMAGE_BASE64_CHARS,
-          SAFE_ANALYZE_REQUEST_BYTES - nonImageBytes - 16_384,
-        );
-
-        if (maxImageBase64Budget < 32_000 || !compressedBlob) {
-          throw new Error(
-            'Combined photo and voice recording exceed the 4 MB AI analysis limit. Please remove or shorten your voice note.',
-          );
-        }
-
-        const fitted = await compressImageForAnalysisBudget(compressedBlob, maxImageBase64Budget);
-        payload.imageBase64 = fitted.base64;
-        payload.imageMimeType = fitted.mimeType;
-        serializedBody = JSON.stringify(payload);
-        payloadBytes = encoder.encode(serializedBody).length;
-      }
-
-      if (payloadBytes > SAFE_ANALYZE_REQUEST_BYTES) {
-        throw new Error(
-          'Analysis request still exceeds the 4 MB serverless payload limit. Please shorten your voice note or select a smaller photograph.',
-        );
-      }
-
       const res = await fetch('/api/analyze-report', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: serializedBody,
+        body: JSON.stringify({
+          imageBase64,
+          imageMimeType,
+          audioBase64: audioBase64 || undefined,
+          audioMimeType: audioMimeType || undefined,
+          description: description.trim(),
+          area: area.trim(),
+          landmark: landmark.trim(),
+          city: city.trim() || 'Hyderabad',
+          selectedCategory: category,
+          language,
+          existingReportsSummary: recentSummary,
+        }),
       });
 
       const rawText = await res.text();
@@ -555,11 +501,11 @@ export function ReportIssuePage({ existingReports, onNavigate }: ReportIssuePage
             <div className="pt-4 border-t border-[#E5E3DC] space-y-3">
               <div className="flex items-center justify-between gap-2">
                 <span className="text-xs font-semibold text-[#1A1D1B]">
-                  Optional Voice Note (English, Telugu, Hindi, Urdu · Max 45s)
+                  Optional Voice Note (English, Telugu, Hindi, Urdu)
                 </span>
                 {isRecording && (
                   <span className="font-mono text-xs text-[#991B1B] tabular-nums">
-                    Recording 0:{String(recordingSeconds).padStart(2, '0')} / 0:{MAX_AUDIO_SECONDS}
+                    Recording 0:{String(recordingSeconds).padStart(2, '0')}
                   </span>
                 )}
               </div>

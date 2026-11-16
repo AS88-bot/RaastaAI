@@ -66,28 +66,24 @@ export function InsightsPage({ reports, loading }: InsightsPageProps) {
     }
     setGenerating(true);
     try {
-      const body = JSON.stringify({
-        city: reports[0]?.city || 'Hyderabad',
-        totalReports: total,
-        resolvedCount,
-        openCount,
-        categoryBreakdown: categoryCounts.map((c) => ({ category: c.label, count: c.count })),
-        topAreas,
-        recentReports: reports.slice(0, 20).map((r) => ({
-          category: getCategoryLabel(r.category),
-          title: r.title,
-          area: r.area,
-          status: r.status,
-          verificationCount: r.verificationCount,
-        })),
-      });
-      if (new TextEncoder().encode(body).length > 4 * 1024 * 1024) {
-        throw new Error('Summary payload exceeds the 4 MB serverless request budget.');
-      }
       const res = await fetch('/api/weekly-summary', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body,
+        body: JSON.stringify({
+          city: reports[0]?.city || 'Hyderabad',
+          totalReports: total,
+          resolvedCount,
+          openCount,
+          categoryBreakdown: categoryCounts.map((c) => ({ category: c.label, count: c.count })),
+          topAreas,
+          recentReports: reports.slice(0, 20).map((r) => ({
+            category: getCategoryLabel(r.category),
+            title: r.title,
+            area: r.area,
+            status: r.status,
+            verificationCount: r.verificationCount,
+          })),
+        }),
       });
       const rawText = await res.text();
       let data: Record<string, unknown> = {};

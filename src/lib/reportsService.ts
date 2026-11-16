@@ -254,9 +254,16 @@ async function uploadViaServerFallback(
     throw new Error('Please sign in again before uploading photographs.');
   }
   const idToken = await currentUser.getIdToken();
-  const imageBase64 = await blobToBase64(blob);
-  const mimeType =
-    blob.type === 'image/png' || blob.type === 'image/webp' ? blob.type : 'image/jpeg';
+  let imageBase64: string;
+  let mimeType: 'image/jpeg' | 'image/png' | 'image/webp';
+  if (blob.size > 2.6 * 1024 * 1024) {
+    const fitted = await compressImageForAnalysisBudget(blob, 3_400_000);
+    imageBase64 = fitted.base64;
+    mimeType = fitted.mimeType;
+  } else {
+    imageBase64 = await blobToBase64(blob);
+    mimeType = blob.type === 'image/png' || blob.type === 'image/webp' ? blob.type : 'image/jpeg';
+  }
 
   const res = await fetch('/api/upload-image', {
     method: 'POST',
@@ -286,7 +293,7 @@ function formatProductionStorageError(err: unknown): string {
   const combined = `${code} ${msg}`.toLowerCase();
 
   if (combined.includes('storage/unauthorized')) {
-    return 'Permission denied by Firebase Storage security rules. Sign in with a verified email and ensure storage.rules are deployed.';
+    return 'Permission denied by Firebase Storage security rules. On Vercel, connect a free Vercel Blob store, configure Cloudinary, or deploy storage.rules.';
   }
   if (
     combined.includes('storage/bucket-not-found') ||
@@ -294,9 +301,64 @@ function formatProductionStorageError(err: unknown): string {
     combined.includes('404') ||
     combined.includes('not found')
   ) {
-    return 'Firebase Storage is not enabled or unreachable for this project. Enable Firebase Storage in Firebase Console and deploy storage.rules before uploading images in production.';
+    return 'No persistent cloud image storage is configured yet. On Vercel, connect a free Vercel Blob store (no card required), configure Cloudinary credentials, or enable Firebase Storage.';
   }
-  return `Firebase Storage upload failed (${msg}). Please verify Firebase Storage is enabled and try again.`;
+  return `Cloud image upload failed (${msg}). Configure Vercel Blob, Cloudinary, or Firebase Storage and try again.`;
+}
+
+interface UploadFallbackConfig {
+  localUploadFallbackEnabled: boolean;
+  cloudUploadFallbackEnabled: boolean;
+  cloudUploadProvider: 'vercel-blob' | 'cloudinary' | null;
+}
+
+let cachedFallbackConfig: UploadFallbackConfig | null = null;
+
+function isVercelHostname(): boolean {
+  return (
+    typeof window !== 'undefined' &&
+    window.location.hostname.toLowerCase().endsWith('.vercel.app')
+  );
+}
+
+async function getUploadFallbackConfig(): Promise<UploadFallbackConfig> {
+  if (cachedFallbackConfig !== null) {
+    return cachedFallbackConfig;
+  }
+  try {
+    const res = await fetch('/api/public-config');
+    if (res.ok) {
+      const data = (await res.json()) as {
+        localUploadFallbackEnabled?: boolean;
+        cloudUploadFallbackEnabled?: boolean;
+        cloudUploadProvider?: 'vercel-blob' | 'cloudinary' | null;
+      };
+      cachedFallbackConfig = {
+        localUploadFallbackEnabled: Boolean(data.localUploadFallbackEnabled),
+        cloudUploadFallbackEnabled: Boolean(data.cloudUploadFallbackEnabled),
+        cloudUploadProvider: data.cloudUploadProvider ?? null,
+      };
+      return cachedFallbackConfig;
+    }
+  } catch {
+    // ignore config lookup failure
+  }
+  return {
+    localUploadFallbackEnabled: !isVercelHostname() && !import.meta.env?.PROD,
+    cloudUploadFallbackEnabled: false,
+    cloudUploadProvider: null,
+  };
+}
+
+async function isServerUploadFallbackAllowed(): Promise<boolean> {
+  const cfg = await getUploadFallbackConfig();
+  if (cfg.cloudUploadFallbackEnabled) {
+    return true;
+  }
+  if (isVercelHostname()) {
+    return false;
+  }
+  return cfg.localUploadFallbackEnabled;
 }
 
 async function uploadWithStorageOrFallback(params: {
@@ -310,16 +372,16 @@ async function uploadWithStorageOrFallback(params: {
     throw new Error(`Processed ${params.label} exceeds 5 MB limit.`);
   }
 
-  const isProd = Boolean(import.meta.env?.PROD);
+  const fallbackAllowed = await isServerUploadFallbackAllowed();
 
-  if (isProd || !storageUnavailableInSession) {
+  if (!fallbackAllowed || !storageUnavailableInSession) {
     const path = `${params.folder}/${params.uid}/${params.reportId}_${Date.now()}.jpg`;
     const storageRef = ref(storage, path);
     try {
       await uploadBytes(storageRef, params.blob, { contentType: 'image/jpeg' });
       return await getDownloadURL(storageRef);
     } catch (storageErr) {
-      if (isProd) {
+      if (!fallbackAllowed) {
         throw new Error(formatProductionStorageError(storageErr));
       }
       if (!isStorageFallbackEligible(storageErr)) {
@@ -328,16 +390,10 @@ async function uploadWithStorageOrFallback(params: {
       }
       storageUnavailableInSession = true;
       console.warn(
-        'Firebase Storage unavailable in development; switching to local Express upload fallback:',
+        'Firebase Storage unavailable; switching to authenticated RaastaAI cloud/server upload fallback:',
         storageErr instanceof Error ? storageErr.message : storageErr,
       );
     }
-  }
-
-  if (isProd) {
-    throw new Error(
-      'Local server image uploads are disabled in production. Enable Firebase Storage and deploy storage.rules.',
-    );
   }
 
   return uploadViaServerFallback(params.folder, params.reportId, params.blob);
@@ -494,9 +550,12 @@ export interface CreateCivicReportInput {
 }
 
 export async function createCivicReport(input: CreateCivicReportInput): Promise<void> {
-  if (import.meta.env?.PROD && input.imageUrl.trim().startsWith('/api/uploads/')) {
+  if (
+    (isVercelHostname() || cachedFallbackConfig?.localUploadFallbackEnabled === false) &&
+    input.imageUrl.trim().startsWith('/api/uploads/')
+  ) {
     throw new Error(
-      'Ephemeral local /api/uploads URLs cannot be stored in production. Please ensure Firebase Storage is enabled.',
+      'Ephemeral local /api/uploads URLs cannot be stored on Vercel. Connect Vercel Blob, Cloudinary, or Firebase Storage.',
     );
   }
   const path = `reports/${input.reportId}`;
@@ -618,9 +677,12 @@ export async function adminUpdateReportStatus(params: {
   resolutionNotes: string;
   resolutionImageUrl: string;
 }): Promise<void> {
-  if (import.meta.env?.PROD && params.resolutionImageUrl.trim().startsWith('/api/uploads/')) {
+  if (
+    (isVercelHostname() || cachedFallbackConfig?.localUploadFallbackEnabled === false) &&
+    params.resolutionImageUrl.trim().startsWith('/api/uploads/')
+  ) {
     throw new Error(
-      'Ephemeral local /api/uploads URLs cannot be stored in production. Please ensure Firebase Storage is enabled.',
+      'Ephemeral local /api/uploads URLs cannot be stored on Vercel. Connect Vercel Blob, Cloudinary, or Firebase Storage.',
     );
   }
   const activityId = `act_${params.reportId}_${Date.now()}`;

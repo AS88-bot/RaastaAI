@@ -14,8 +14,8 @@ const app = initializeApp(firebaseConfig);
 export const db = getFirestore(app, firebaseConfig.firestoreDatabaseId);
 export const auth = getAuth(app);
 export const storage = getStorage(app);
-storage.maxUploadRetryTime = import.meta.env.PROD ? 20000 : 3500;
-storage.maxOperationRetryTime = import.meta.env.PROD ? 20000 : 4000;
+storage.maxUploadRetryTime = 3500;
+storage.maxOperationRetryTime = 4000;
 export const googleProvider = new GoogleAuthProvider();
 
 export const BOOTSTRAPPED_ADMIN_EMAIL = 'raniaoflords29@gmail.com';

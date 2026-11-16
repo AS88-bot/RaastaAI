@@ -6,6 +6,7 @@ import path from 'path';
 import { fileURLToPath, pathToFileURL } from 'url';
 import dotenv from 'dotenv';
 import { GoogleGenAI, ThinkingLevel, Type } from '@google/genai';
+import { put as putVercelBlob } from '@vercel/blob';
 import { z } from 'zod';
 
 dotenv.config();
@@ -379,11 +380,80 @@ async function generateWithRetry<T>(fn: () => Promise<T>, maxAttempts = 2): Prom
   throw lastError;
 }
 
+export type CloudUploadProvider = 'vercel-blob' | 'cloudinary' | null;
+
+export type CloudUploadHandler = (params: {
+  buffer: Buffer;
+  folder: 'reports' | 'resolutions';
+  uid: string;
+  filename: string;
+  mimeType: 'image/jpeg' | 'image/png' | 'image/webp';
+}) => Promise<{ url: string; provider: 'vercel-blob' | 'cloudinary' }>;
+
+export function getCloudUploadProvider(): CloudUploadProvider {
+  if (process.env.BLOB_READ_WRITE_TOKEN?.trim()) {
+    return 'vercel-blob';
+  }
+  if (
+    process.env.CLOUDINARY_CLOUD_NAME?.trim() &&
+    process.env.CLOUDINARY_API_KEY?.trim() &&
+    process.env.CLOUDINARY_API_SECRET?.trim()
+  ) {
+    return 'cloudinary';
+  }
+  return null;
+}
+
+async function uploadToCloudinary(params: {
+  buffer: Buffer;
+  folder: 'reports' | 'resolutions';
+  publicId: string;
+  mimeType: 'image/jpeg' | 'image/png' | 'image/webp';
+}): Promise<string> {
+  const cloudName = process.env.CLOUDINARY_CLOUD_NAME?.trim() || '';
+  const apiKey = process.env.CLOUDINARY_API_KEY?.trim() || '';
+  const apiSecret = process.env.CLOUDINARY_API_SECRET?.trim() || '';
+  if (!cloudName || !apiKey || !apiSecret) {
+    throw new Error('CLOUDINARY_NOT_CONFIGURED');
+  }
+
+  const timestamp = Math.floor(Date.now() / 1000);
+  const cloudinaryFolder = `raasta/${params.folder}`;
+  const toSign = `folder=${cloudinaryFolder}&public_id=${params.publicId}&timestamp=${timestamp}${apiSecret}`;
+  const signature = crypto.createHash('sha1').update(toSign).digest('hex');
+
+  const ext = params.mimeType === 'image/png' ? 'png' : params.mimeType === 'image/webp' ? 'webp' : 'jpg';
+  const form = new FormData();
+  form.append('file', new Blob([new Uint8Array(params.buffer)], { type: params.mimeType }), `${params.publicId}.${ext}`);
+  form.append('api_key', apiKey);
+  form.append('timestamp', String(timestamp));
+  form.append('signature', signature);
+  form.append('folder', cloudinaryFolder);
+  form.append('public_id', params.publicId);
+
+  const response = await fetch(
+    `https://api.cloudinary.com/v1_1/${encodeURIComponent(cloudName)}/image/upload`,
+    {
+      method: 'POST',
+      body: form,
+    },
+  );
+  const payload = (await response.json().catch(() => ({}))) as {
+    secure_url?: string;
+    error?: { message?: string };
+  };
+  if (!response.ok || !payload.secure_url) {
+    throw new Error(payload.error?.message || `Cloudinary upload failed (${response.status})`);
+  }
+  return payload.secure_url;
+}
+
 export function createApiApp(
   customAiClient?: GoogleGenAI,
   options?: {
     uploadsDir?: string;
     verifyAuthToken?: VerifyAuthTokenFn;
+    uploadToCloud?: CloudUploadHandler;
   },
 ): Express {
   const app = express();
@@ -399,6 +469,9 @@ export function createApiApp(
   app.use(express.json({ limit: SAFE_VERCEL_REQUEST_BYTES }));
 
   app.get('/api/health', (_req, res) => {
+    const cloudUploadProvider: CloudUploadProvider = options?.uploadToCloud
+      ? 'vercel-blob'
+      : getCloudUploadProvider();
     res.json({
       ok: true,
       geminiConfigured: Boolean(
@@ -407,27 +480,42 @@ export function createApiApp(
       mapsConfigured: Boolean(
         process.env.VITE_GOOGLE_MAPS_API_KEY || process.env.GOOGLE_MAPS_API_KEY,
       ),
+      cloudUploadProvider,
+      cloudUploadFallbackEnabled: Boolean(options?.uploadToCloud || cloudUploadProvider),
     });
   });
 
   app.get('/api/public-config', (_req, res) => {
     const mapsApiKey =
       process.env.VITE_GOOGLE_MAPS_API_KEY || process.env.GOOGLE_MAPS_API_KEY || '';
+    const isVercelRuntime = process.env.VERCEL === '1';
+    const cloudUploadProvider: CloudUploadProvider = options?.uploadToCloud
+      ? 'vercel-blob'
+      : getCloudUploadProvider();
     res.json({
       mapsApiKey,
       mapsConfigured: Boolean(mapsApiKey),
       geminiConfigured: Boolean(
         process.env.GEMINI_API_KEY && process.env.GEMINI_API_KEY !== 'MY_GEMINI_API_KEY',
       ),
+      localUploadFallbackEnabled: !isVercelRuntime,
+      cloudUploadProvider,
+      cloudUploadFallbackEnabled: Boolean(options?.uploadToCloud || cloudUploadProvider),
     });
   });
 
   app.post('/api/upload-image', async (req, res) => {
-    const isProductionRuntime = process.env.NODE_ENV === 'production' || process.env.VERCEL === '1';
-    if (isProductionRuntime && !options?.uploadsDir) {
+    const isVercelRuntime = process.env.VERCEL === '1';
+    const cloudUploadProvider: CloudUploadProvider = options?.uploadToCloud
+      ? 'vercel-blob'
+      : getCloudUploadProvider();
+    const hasCloudUpload = Boolean(options?.uploadToCloud || cloudUploadProvider);
+    const localDiskAllowed = !isVercelRuntime || Boolean(options?.uploadsDir);
+
+    if (!hasCloudUpload && !localDiskAllowed) {
       res.status(503).json({
         error:
-          'Local server image upload fallback is disabled in production. Enable Firebase Storage and deploy storage.rules for direct uploads.',
+          'Persistent image storage is not configured on Vercel. Connect a free Vercel Blob store (BLOB_READ_WRITE_TOKEN), configure Cloudinary, or enable Firebase Storage.',
       });
       return;
     }
@@ -469,7 +557,7 @@ export function createApiApp(
     const buffer = Buffer.from(cleanBase64, 'base64');
 
     if (buffer.length === 0 || buffer.length > MAX_FALLBACK_UPLOAD_BYTES) {
-      res.status(400).json({ error: 'Image size must be between 1 byte and 2.8 MB for local upload fallback.' });
+      res.status(400).json({ error: 'Image size must be between 1 byte and 2.8 MB for upload.' });
       return;
     }
 
@@ -483,6 +571,76 @@ export function createApiApp(
     const ext = mimeType === 'image/png' ? 'png' : mimeType === 'image/webp' ? 'webp' : 'jpg';
     const randomSuffix = crypto.randomBytes(4).toString('hex');
     const safeFilename = `${reportId}_${Date.now()}_${randomSuffix}.${ext}`;
+
+    if (options?.uploadToCloud) {
+      try {
+        const uploaded = await options.uploadToCloud({
+          buffer,
+          folder,
+          uid: verifiedUser.uid,
+          filename: safeFilename,
+          mimeType,
+        });
+        res.status(201).json({
+          url: uploaded.url,
+          provider: uploaded.provider,
+        });
+        return;
+      } catch (err) {
+        console.error('Cloud upload handler failed:', err);
+        res.status(502).json({
+          error: 'Cloud image upload failed. Please verify Vercel Blob or Cloudinary credentials.',
+        });
+        return;
+      }
+    }
+
+    if (cloudUploadProvider === 'vercel-blob') {
+      try {
+        const blobPath = `raasta/${folder}/${verifiedUser.uid}/${safeFilename}`;
+        const blob = await putVercelBlob(blobPath, buffer, {
+          access: 'public',
+          contentType: mimeType,
+          addRandomSuffix: false,
+          token: process.env.BLOB_READ_WRITE_TOKEN,
+        });
+        res.status(201).json({
+          url: blob.url,
+          provider: 'vercel-blob',
+        });
+        return;
+      } catch (err) {
+        console.error('Vercel Blob upload failed:', err);
+        res.status(502).json({
+          error: 'Vercel Blob image upload failed. Verify BLOB_READ_WRITE_TOKEN in Vercel Storage.',
+        });
+        return;
+      }
+    }
+
+    if (cloudUploadProvider === 'cloudinary') {
+      try {
+        const publicId = `${verifiedUser.uid}_${safeFilename.replace(/\.[^.]+$/, '')}`;
+        const secureUrl = await uploadToCloudinary({
+          buffer,
+          folder,
+          publicId,
+          mimeType,
+        });
+        res.status(201).json({
+          url: secureUrl,
+          provider: 'cloudinary',
+        });
+        return;
+      } catch (err) {
+        console.error('Cloudinary upload failed:', err);
+        res.status(502).json({
+          error: 'Cloudinary image upload failed. Verify CLOUDINARY_CLOUD_NAME, CLOUDINARY_API_KEY, and CLOUDINARY_API_SECRET.',
+        });
+        return;
+      }
+    }
+
     const targetFolderDir = path.resolve(uploadsDir, folder);
     const targetFilePath = path.resolve(targetFolderDir, safeFilename);
 

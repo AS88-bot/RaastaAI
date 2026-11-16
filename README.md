@@ -33,7 +33,7 @@ RaastaAI is a full-stack civic infrastructure reporting and community intelligen
 | **Frontend** | React 19, TypeScript, Vite, Tailwind CSS v4, Lucide React |
 | **Server & AI API** | Node.js (v22+) + Express (`server.ts`), `@google/genai` (`gemini-4-hydrogen`), Zod validation, sliding-window rate limiter |
 | **Database & Auth** | Firebase Authentication (Google Sign-In & optional Email/Password), Cloud Firestore (`firestore.rules` + `firebase-blueprint.json`) |
-| **Media Storage** | Firebase Storage (`storage.rules`) with automatic fast-fail failover to authenticated Express upload endpoints (`/api/upload-image`, `/api/uploads/:folder/:filename`) |
+| **Media Storage** | Firebase Storage (`storage.rules`) with automatic failover to **Vercel Blob** (`BLOB_READ_WRITE_TOKEN`), **Cloudinary**, or authenticated local Express storage in dev/preview (`/api/upload-image`, `/api/uploads/:folder/:filename`) |
 | **Mapping** | `@vis.gl/react-google-maps` (`AdvancedMarker`, `Pin`, `InfoWindow`) + automatic list fallback |
 
 ---
@@ -90,10 +90,11 @@ Set variables in `.env` (or AI Studio Secrets / hosting environment variables):
 ### 3. Firebase Configuration
 1. **Authentication**: Google Sign-In is supported out of the box. To also allow Email/Password accounts, enable **Email/Password** in **Firebase Console → Authentication → Sign-in method**.
 2. **Firestore**: Deploy `firestore.rules` to your database (`firebase deploy --only firestore:rules`).
-3. **Storage (Required in Production)**:
-   - Enable **Storage** in Firebase Console and publish `storage.rules` (`firebase deploy --only storage`).
-   - Direct client-side Firebase Storage uploads (up to 5 MB) are used for report and resolution photographs.
-   - In **production**, the local filesystem fallback (`/api/upload-image`) is intentionally disabled so ephemeral `/api/uploads/...` URLs are never stored in Firestore. In **local development**, if Firebase Storage is not yet enabled, `src/lib/reportsService.ts` fails fast after 3.5s and falls back to `/api/upload-image`.
+3. **Media Storage**:
+   - **Vercel Blob (Recommended, No Card Required)**: Connect a free **Blob** store in Vercel Storage (`BLOB_READ_WRITE_TOKEN`). Authenticated uploads via `/api/upload-image` automatically persist to Vercel Blob CDN when Firebase Storage is unavailable.
+   - **Cloudinary (Alternative, No Card Required)**: Set `CLOUDINARY_CLOUD_NAME`, `CLOUDINARY_API_KEY`, and `CLOUDINARY_API_SECRET` on the server.
+   - **Firebase Storage (Optional)**: Enable Storage in Firebase Console and publish `storage.rules` (`firebase deploy --only storage`) for direct client-side uploads up to 5 MB.
+   - In **Vercel production**, local disk writes are disabled so ephemeral `/api/uploads/...` URLs are never stored in Firestore. In **local dev / Shared App**, if no cloud storage is enabled, `src/lib/reportsService.ts` fails fast and falls back to `/api/upload-image` on local disk.
 4. **Admin Access**: Official moderation requires a verified email listed in `admins/{uid}` or the bootstrapped administrator account configured in `firestore.rules` and `src/lib/firebase.ts`.
 
 ### 4. Run Locally
@@ -117,20 +118,23 @@ RaastaAI uses a single-project **Vite + Vercel Serverless Function** setup confi
    - **Build Command**: `npm run build`
    - **Output Directory**: `dist`
 
-### Step 2: Configure Vercel Environment Variables
-Add these under **Project Settings → Environment Variables**:
-- `GEMINI_API_KEY` *(Required, server-side only)* — Your Google Gemini API key. **Never** prefix with `VITE_` or expose in browser bundles.
-- `VITE_GOOGLE_MAPS_API_KEY` or `GOOGLE_MAPS_API_KEY` *(Optional)* — Browser key for interactive Google Maps on `/map`. Restrict this key by HTTP referrer (`https://<your-project>.vercel.app/*`) and to the Maps JavaScript API in Google Cloud Console.
-- `APP_URL` *(Optional)* — Your deployed Vercel URL (`https://<your-project>.vercel.app`).
+### Step 2: Configure Vercel Environment Variables & No-Card Image Storage
+1. **Recommended Image Storage — Vercel Blob Hobby (No Credit Card Required)**:
+   - In your Vercel project dashboard, open **Storage → Create Database → Blob** and connect it to the project. Vercel automatically sets `BLOB_READ_WRITE_TOKEN` (keep this server-side only; never prefix with `VITE_`).
+   - *Alternative (No Card)*: Configure `CLOUDINARY_CLOUD_NAME`, `CLOUDINARY_API_KEY`, and `CLOUDINARY_API_SECRET` (server-side only) under **Project Settings → Environment Variables**.
+   - **Priority order**: RaastaAI tries Firebase Storage first (if enabled), then **Vercel Blob**, then **Cloudinary** via authenticated `POST /api/upload-image` (Firebase ID token + verified email required).
+2. Add remaining environment variables under **Project Settings → Environment Variables**:
+   - `GEMINI_API_KEY` *(Required, server-side only)* — Your Google Gemini API key. **Never** prefix with `VITE_` or expose in browser bundles.
+   - `VITE_GOOGLE_MAPS_API_KEY` or `GOOGLE_MAPS_API_KEY` *(Optional)* — Browser key for interactive Google Maps on `/map`. Restrict this key by HTTP referrer (`https://<your-project>.vercel.app/*`) and to the Maps JavaScript API in Google Cloud Console.
+   - `APP_URL` *(Optional)* — Your deployed Vercel URL (`https://<your-project>.vercel.app`).
 
 ### Step 3: Required Firebase Setup for Production
-1. **Enable Firebase Storage & Deploy `storage.rules`**:
-   - In **Firebase Console → Build → Storage**, initialize your Storage bucket (`gen-lang-client-0709466181.firebasestorage.app`) and publish `storage.rules`.
-   - Production image uploads fail with an actionable configuration error if Storage is disabled or rules deny access; local disk uploads are never used in production.
-2. **Authorize Your Vercel Domain in Firebase Auth**:
+1. **Authorize Your Vercel Domain in Firebase Auth**:
    - Open **Firebase Console → Authentication → Settings → Authorized domains** and add your Vercel domain (e.g., `<your-project>.vercel.app` and any custom domain) so Google Sign-In popups succeed.
-3. **Deploy `firestore.rules`**:
+2. **Deploy `firestore.rules`**:
    - Ensure `firestore.rules` is deployed to your Firestore database (`ai-studio-890988cc-db2b-45f2-b546-38a4e4229fbd`).
+3. **Firebase Storage (Optional if using Vercel Blob or Cloudinary)**:
+   - If you prefer direct client-side uploads to Firebase Storage, initialize Storage in Firebase Console and deploy `storage.rules`. Otherwise, Vercel Blob or Cloudinary handles uploads without requiring Firebase billing verification.
 
 ### Known Vercel Limits & Payload Budgets
 - **4.5 MB Serverless Request Body Limit**: Vercel Node.js Functions enforce a hard 4.5 MB limit on incoming request bodies.
