@@ -6,6 +6,7 @@ import test from 'node:test';
 import {
   createApiApp,
   getCloudUploadProvider,
+  getNormalizedBlobToken,
   resetRateLimiter,
   SAFE_VERCEL_REQUEST_BYTES,
 } from '../server.ts';
@@ -228,10 +229,16 @@ test('POST /api/upload-image disables local disk fallback on Vercel unless cloud
     await vercelCloud.close();
   }
 
-  // Verify provider env detection & zero secret leakage
-  process.env.BLOB_READ_WRITE_TOKEN = 'vercel_blob_rw_SECRET_TOKEN_VALUE';
+  // Verify provider env detection, quote stripping, & zero secret leakage
+  process.env.BLOB_READ_WRITE_TOKEN = '  "vercel_blob_rw_SECRET_TOKEN_VALUE"  ';
+  assert.equal(getNormalizedBlobToken(), 'vercel_blob_rw_SECRET_TOKEN_VALUE');
   assert.equal(getCloudUploadProvider(), 'vercel-blob');
-  const blobEnvServer = await startTestServer();
+  const blobEnvServer = await startTestServer({
+    verifyAuthToken: async (token) =>
+      token === 'valid-citizen'
+        ? { uid: 'citizen_vercel_1', email: 'citizen@example.com', emailVerified: true }
+        : null,
+  });
   try {
     const cfgText = await (await fetch(`${blobEnvServer.baseUrl}/api/public-config`)).text();
     assert.ok(!cfgText.includes('vercel_blob_rw_SECRET_TOKEN_VALUE'));
@@ -241,6 +248,26 @@ test('POST /api/upload-image disables local disk fallback on Vercel unless cloud
     };
     assert.equal(cfg.cloudUploadFallbackEnabled, true);
     assert.equal(cfg.cloudUploadProvider, 'vercel-blob');
+
+    // Invalid token format should return clear guidance without leaking token value
+    process.env.BLOB_READ_WRITE_TOKEN = 'not_a_rw_token_SECRET_XYZ';
+    const badRes = await fetch(`${blobEnvServer.baseUrl}/api/upload-image`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: 'Bearer valid-citizen',
+      },
+      body: JSON.stringify({
+        folder: 'reports',
+        reportId: 'rep_bad_tok',
+        imageBase64: VALID_TINY_PNG_BASE64,
+        mimeType: 'image/png',
+      }),
+    });
+    assert.equal(badRes.status, 502);
+    const badText = await badRes.text();
+    assert.ok(!badText.includes('not_a_rw_token_SECRET_XYZ'));
+    assert.match(badText, /vercel_blob_rw_/);
   } finally {
     await blobEnvServer.close();
     delete process.env.BLOB_READ_WRITE_TOKEN;

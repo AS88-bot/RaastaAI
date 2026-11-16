@@ -390,8 +390,13 @@ export type CloudUploadHandler = (params: {
   mimeType: 'image/jpeg' | 'image/png' | 'image/webp';
 }) => Promise<{ url: string; provider: 'vercel-blob' | 'cloudinary' }>;
 
+export function getNormalizedBlobToken(): string {
+  const raw = (process.env.BLOB_READ_WRITE_TOKEN || '').trim();
+  return raw.replace(/^['"]+|['"]+$/g, '').trim();
+}
+
 export function getCloudUploadProvider(): CloudUploadProvider {
-  if (process.env.BLOB_READ_WRITE_TOKEN?.trim()) {
+  if (getNormalizedBlobToken()) {
     return 'vercel-blob';
   }
   if (
@@ -596,13 +601,21 @@ export function createApiApp(
     }
 
     if (cloudUploadProvider === 'vercel-blob') {
+      const blobToken = getNormalizedBlobToken();
+      if (!blobToken.startsWith('vercel_blob_rw_')) {
+        res.status(502).json({
+          error:
+            'BLOB_READ_WRITE_TOKEN is invalid. It must start with "vercel_blob_rw_". Copy it from Vercel Storage → Blob → .env.local or Connect Project.',
+        });
+        return;
+      }
       try {
         const blobPath = `raasta/${folder}/${verifiedUser.uid}/${safeFilename}`;
         const blob = await putVercelBlob(blobPath, buffer, {
           access: 'public',
           contentType: mimeType,
-          addRandomSuffix: false,
-          token: process.env.BLOB_READ_WRITE_TOKEN,
+          addRandomSuffix: true,
+          token: blobToken,
         });
         res.status(201).json({
           url: blob.url,
@@ -611,8 +624,13 @@ export function createApiApp(
         return;
       } catch (err) {
         console.error('Vercel Blob upload failed:', err);
+        const rawDetail = err instanceof Error ? err.message : String(err);
+        const safeDetail = rawDetail.replace(/vercel_blob_rw_[^\s"']+/gi, '[redacted]');
+        const hint = safeDetail.toLowerCase().includes('private')
+          ? ' Make sure the Vercel Blob store access level is set to Public.'
+          : ' Verify BLOB_READ_WRITE_TOKEN is an active read-write token for your Blob store.';
         res.status(502).json({
-          error: 'Vercel Blob image upload failed. Verify BLOB_READ_WRITE_TOKEN in Vercel Storage.',
+          error: `Vercel Blob upload failed (${safeDetail}).${hint}`,
         });
         return;
       }
